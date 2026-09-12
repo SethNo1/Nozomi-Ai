@@ -1,0 +1,248 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#0b0b0f">
+<title>Nozomi AI</title>
+<style>
+*{box-sizing:border-box}html,body{height:100%}
+body{margin:0;background:#09090d;color:#f5f5f7;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;display:flex;flex-direction:column}
+header{padding:18px;border-bottom:1px solid #292932;background:#101015}
+.brand{font-size:22px;font-weight:850;margin-bottom:14px}
+.model-row{display:flex;gap:10px;align-items:center}.model-row label{opacity:.75}
+select{flex:1;min-width:0;background:#18181f;color:#fff;border:1px solid #34343e;border-radius:13px;padding:12px;font-size:15px}
+#status{font-size:12px;opacity:.6;margin-top:8px}
+#chat{flex:1;overflow:auto;padding:18px}
+.msg{max-width:88%;padding:12px 14px;margin:10px 0;border-radius:17px;line-height:1.5;white-space:pre-wrap;word-break:break-word}
+.ai{background:#1b1b23;margin-right:auto}.user{background:#2563eb;margin-left:auto}.muted{opacity:.65;font-style:italic}
+.file-card{max-width:88%;margin:8px 0 14px;padding:12px 14px;background:#15151c;border:1px solid #34343e;border-radius:14px}
+.file-card b{display:block;margin-bottom:8px}.file-card a{display:inline-block;text-decoration:none;background:#fff;color:#111;padding:8px 12px;border-radius:10px;font-weight:750}
+#attachments{display:none;padding:8px 12px;border-top:1px solid #22222b;background:#101015;font-size:13px;gap:8px;flex-wrap:wrap}
+.chip{background:#20202a;border:1px solid #34343e;border-radius:999px;padding:7px 10px}
+form{display:flex;gap:8px;padding:12px;border-top:1px solid #292932;background:#101015}
+#attachBtn{width:48px;padding:0;font-size:22px}
+input[type=text]{flex:1;min-width:0;background:#18181f;color:#fff;border:1px solid #34343e;border-radius:14px;padding:14px;font-size:16px;outline:none}
+button{border:0;border-radius:14px;padding:0 18px;font-weight:800;background:#fff;color:#111}
+button:disabled{opacity:.5}
+#fileInput{display:none}
+.small-note{padding:0 14px 9px;background:#101015;font-size:11px;opacity:.5}
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">NOZOMI AI</div>
+  <div class="model-row">
+    <label>Model</label>
+    <select id="model"><option>Memuat model...</option></select>
+  </div>
+  <div id="status">Menyiapkan model...</div>
+</header>
+
+<main id="chat">
+  <div class="msg ai">Selamat datang master 😁</div>
+</main>
+
+<div id="attachments"></div>
+<div class="small-note">📎 TXT/code dapat dibaca langsung. Gambar hanya bekerja pada model AICUTAD yang mendukung vision/multimodal.</div>
+
+<form id="form">
+  <button id="attachBtn" type="button">📎</button>
+  <input id="fileInput" type="file" multiple accept="image/*,.txt,.md,.js,.ts,.jsx,.tsx,.json,.html,.css,.py,.java,.c,.cpp,.h,.hpp,.xml,.yaml,.yml,.ini,.log,.csv">
+  <input id="input" type="text" placeholder="Tulis pesan..." autocomplete="off">
+  <button id="send" type="submit">Kirim</button>
+</form>
+
+<script>
+const chat = document.getElementById("chat");
+const form = document.getElementById("form");
+const input = document.getElementById("input");
+const send = document.getElementById("send");
+const modelSelect = document.getElementById("model");
+const statusEl = document.getElementById("status");
+const fileInput = document.getElementById("fileInput");
+const attachBtn = document.getElementById("attachBtn");
+const attachmentsBox = document.getElementById("attachments");
+
+let models = [];
+let pendingAttachments = [];
+
+function addMessage(text, cls) {
+  const el = document.createElement("div");
+  el.className = "msg " + cls;
+  el.textContent = text;
+  chat.appendChild(el);
+  chat.scrollTop = chat.scrollHeight;
+  return el;
+}
+
+function renderFilesFromReply(reply) {
+  const regex = /<<<FILE:([^>\n]+)>>>\s*([\s\S]*?)\s*<<<END_FILE>>>/g;
+  let match;
+
+  while ((match = regex.exec(reply)) !== null) {
+    const filename = match[1].trim().replace(/[\/\\]/g, "_");
+    const content = match[2];
+    const blob = new Blob([content], {type:"application/octet-stream"});
+    const url = URL.createObjectURL(blob);
+
+    const card = document.createElement("div");
+    card.className = "file-card";
+
+    const title = document.createElement("b");
+    title.textContent = "📄 " + filename;
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    link.textContent = "Download";
+
+    card.append(title, link);
+    chat.appendChild(card);
+  }
+}
+
+function cleanedReply(reply) {
+  return reply.replace(/<<<FILE:([^>\n]+)>>>\s*[\s\S]*?\s*<<<END_FILE>>>/g,
+    (_, name) => `📄 File dibuat: ${name.trim()}`
+  ).trim();
+}
+
+async function loadModels() {
+  try {
+    const r = await fetch("/api/models");
+    const data = await r.json();
+    models = Array.isArray(data.models) ? data.models : [];
+
+    modelSelect.innerHTML = "";
+
+    const groups = {
+      tokenharbor: document.createElement("optgroup"),
+      aicutad: document.createElement("optgroup")
+    };
+    groups.tokenharbor.label = "TokenHarbor";
+    groups.aicutad.label = "AICUTAD";
+
+    models.forEach((m, i) => {
+      const o = document.createElement("option");
+      o.value = i;
+      o.textContent = m.name || m.id;
+      groups[m.provider]?.appendChild(o);
+    });
+
+    if (groups.tokenharbor.children.length) modelSelect.appendChild(groups.tokenharbor);
+    if (groups.aicutad.children.length) modelSelect.appendChild(groups.aicutad);
+
+    const saved = localStorage.getItem("nozomi_model_id");
+    const idx = models.findIndex(m => `${m.provider}:${m.id}` === saved);
+    if (idx >= 0) modelSelect.value = String(idx);
+
+    statusEl.textContent = `${models.length} model tersedia` + (data.warning ? ` • ${data.warning}` : "");
+  } catch {
+    statusEl.textContent = "Gagal memuat daftar model.";
+  }
+}
+
+modelSelect.addEventListener("change", () => {
+  const m = models[Number(modelSelect.value)];
+  if (m) localStorage.setItem("nozomi_model_id", `${m.provider}:${m.id}`);
+});
+
+attachBtn.addEventListener("click", () => fileInput.click());
+
+fileInput.addEventListener("change", async () => {
+  pendingAttachments = [];
+
+  for (const file of Array.from(fileInput.files).slice(0,5)) {
+    if (file.type.startsWith("image/")) {
+      if (file.size > 1500000) {
+        addMessage(`Gambar ${file.name} terlalu besar. Maks 1.5 MB.`, "ai");
+        continue;
+      }
+
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+
+      pendingAttachments.push({kind:"image", name:file.name, dataUrl});
+    } else {
+      if (file.size > 250000) {
+        addMessage(`File ${file.name} terlalu besar. Maks 250 KB untuk file teks.`, "ai");
+        continue;
+      }
+
+      const content = await file.text();
+      pendingAttachments.push({kind:"text", name:file.name, content});
+    }
+  }
+
+  attachmentsBox.innerHTML = "";
+  pendingAttachments.forEach(a => {
+    const chip = document.createElement("span");
+    chip.className = "chip";
+    chip.textContent = (a.kind === "image" ? "🖼️ " : "📄 ") + a.name;
+    attachmentsBox.appendChild(chip);
+  });
+
+  attachmentsBox.style.display = pendingAttachments.length ? "flex" : "none";
+});
+
+form.addEventListener("submit", async e => {
+  e.preventDefault();
+
+  const message = input.value.trim();
+  const selected = models[Number(modelSelect.value)];
+
+  if ((!message && !pendingAttachments.length) || !selected) return;
+
+  if (message) addMessage(message, "user");
+  if (pendingAttachments.length) {
+    addMessage(`📎 ${pendingAttachments.map(a => a.name).join(", ")}`, "user");
+  }
+
+  input.value = "";
+  send.disabled = true;
+  const loading = addMessage("Nozomi sedang berpikir...", "ai muted");
+
+  try {
+    const r = await fetch("/api/chat", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        message,
+        provider:selected.provider,
+        model:selected.id,
+        attachments:pendingAttachments
+      })
+    });
+
+    const data = await r.json().catch(() => ({}));
+    loading.className = "msg ai";
+
+    if (!r.ok) {
+      loading.textContent = "Error: " + (data.error || `HTTP ${r.status}`);
+    } else {
+      const reply = String(data.reply || "");
+      loading.textContent = cleanedReply(reply) || "File selesai dibuat.";
+      renderFilesFromReply(reply);
+    }
+  } catch {
+    loading.className = "msg ai";
+    loading.textContent = "Gagal terhubung ke server.";
+  } finally {
+    pendingAttachments = [];
+    fileInput.value = "";
+    attachmentsBox.innerHTML = "";
+    attachmentsBox.style.display = "none";
+    send.disabled = false;
+    chat.scrollTop = chat.scrollHeight;
+  }
+});
+
+loadModels();
+</script>
+</body>
+</html>
